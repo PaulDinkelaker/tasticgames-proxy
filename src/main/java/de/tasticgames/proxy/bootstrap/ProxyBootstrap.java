@@ -232,7 +232,19 @@ public final class ProxyBootstrap {
             return;
         }
         CompletableFuture<?> health = apiClient.call("health", client -> client.health().thenAccept(h ->
-                logger.info("API connection established: {} {} [{}].", h.service(), h.version(), h.status())));
+                logger.info("API connection established: {} {} [{}].", h.service(), h.version(), h.status())))
+                .thenCompose(ignored -> apiClient.call("network.servers", client -> client.network().listServers().thenAccept(servers ->
+                        logger.info("API authentication verified for service '{}' ({} network servers registered).",
+                                config.api().serviceName(), servers.size()))))
+                .exceptionally(t -> {
+                    Throwable cause = Throwables.unwrap(t);
+                    if (cause instanceof de.tasticgames.client.internal.HttpException http && http.statusCode() == 404) {
+                        logger.error("The TasticGames API at {} does not know the 1.0 endpoints (GET /api/v1/network/servers -> 404). "
+                                + "Deploy tasticgames-api 1.0 (Flyway V5-V15); until then the proxy runs on last-known-good caches.", config.api().baseUrl());
+                        return null;
+                    }
+                    throw new java.util.concurrent.CompletionException(cause);
+                });
         if (config.api().requireOnStartup()) {
             health.get(config.api().requestTimeout().toMillis() + 1000, java.util.concurrent.TimeUnit.MILLISECONDS);
         } else {
@@ -309,6 +321,7 @@ public final class ProxyBootstrap {
         register(new MaintenancePingListener(maintenanceService));
         register(new AlphaAccessListener(alphaAccessService, telemetryService));
         register(playerListener);
+        register(this); // /lobby|hub|l forwarding while on a lobby server
         register(new ServerRegistryListener(serverRegistryService));
         register(new RoutingGuardListener(serverRegistryService, messages));
         register(new FallbackListener(fallbackService, logger));
@@ -319,6 +332,32 @@ public final class ProxyBootstrap {
     private void register(Object listener) {
         proxyServer.getEventManager().register(plugin, listener);
         listeners.add(listener);
+    }
+
+    /**
+     * Velocity executes registered commands itself and never forwards them: /lobby, /hub and /l are
+     * therefore forwarded to the backend while the player already is on a lobby server so
+     * TasticLobby's own /lobby (spawn / leave the cookie open world) runs.
+     */
+    @com.velocitypowered.api.event.Subscribe(order = com.velocitypowered.api.event.PostOrder.EARLY)
+    public void onCommandExecute(com.velocitypowered.api.event.command.CommandExecuteEvent event) {
+        if (!(event.getCommandSource() instanceof Player player)) {
+            return;
+        }
+        String raw = event.getCommand().trim();
+        int space = raw.indexOf(' ');
+        String name = (space < 0 ? raw : raw.substring(0, space)).toLowerCase(java.util.Locale.ROOT);
+        if (!(name.equals("lobby") || name.equals("hub") || name.equals("l"))) {
+            return;
+        }
+        String current = player.getCurrentServer().map(s -> s.getServerInfo().getName()).orElse(null);
+        if (current == null) {
+            return;
+        }
+        boolean onLobby = serverRegistryService.find(current).map(s -> s.type() == de.tasticgames.proxy.server.ServerType.LOBBY).orElse(false);
+        if (onLobby) {
+            event.setResult(com.velocitypowered.api.event.command.CommandExecuteEvent.CommandResult.forwardToServer());
+        }
     }
 
     private void registerCommands() {

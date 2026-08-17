@@ -67,8 +67,9 @@ public final class ProxyApiClient implements ProxyService {
         }
         if (!configuration.credentialsConfigured()) {
             enabled = false;
-            logger.warn("TasticGames API integration is enabled but no API key is configured "
-                    + "(config api.authentication.api-key or env TASTIC_API_KEY). Running in degraded local mode.");
+            logger.error("TasticGames API integration is enabled but no API key is configured (config api.authentication.api-key "
+                    + "or env TASTIC_API_KEY, service '{}'). Running in DEGRADED local mode: /friend, /party, /clan, central maintenance, "
+                    + "alpha access and lobby transfers answer 'unavailable' until the key is set.", configuration.serviceName());
             return;
         }
         ApiClientConfiguration clientConfiguration = ApiClientConfiguration.builder()
@@ -103,7 +104,7 @@ public final class ProxyApiClient implements ProxyService {
 
     /** True while the last API call succeeded (or nothing was attempted yet). */
     public boolean healthy() {
-        return enabled() && consecutiveFailures.get() == 0;
+        return (enabled() && consecutiveFailures.get() == 0) && !credentialsRejected;
     }
 
     public int consecutiveFailures() {
@@ -138,6 +139,28 @@ public final class ProxyApiClient implements ProxyService {
         return delegate().lobby();
     }
 
+    private volatile boolean credentialsRejected;
+    private volatile long lastAuthErrorLogAt;
+
+    /** True after the API answered 401/403 – the configured service key does not match the API. */
+    public boolean credentialsRejected() {
+        return credentialsRejected;
+    }
+
+    private void recordAuthFailure(String operation, HttpException http) {
+        credentialsRejected = true;
+        metrics.increment("api.auth_failures");
+        recordFailure(operation, http);
+        long now = System.currentTimeMillis();
+        if (now - lastAuthErrorLogAt > 60_000) {
+            lastAuthErrorLogAt = now;
+            ProxyConfiguration.Api api = configurationService.configuration().api();
+            logger.error("The TasticGames API rejected the credentials of service '{}' (HTTP {} on {}). Register the key as "
+                    + "tasticgames.security.service-auth.services.{} on the API or fix api.authentication.api-key / TASTIC_API_KEY.",
+                    api.serviceName(), http.statusCode(), operation, api.serviceName());
+        }
+    }
+
     public TasticApiClient raw() {
         return delegate();
     }
@@ -162,7 +185,9 @@ public final class ProxyApiClient implements ProxyService {
             long millis = Duration.ofNanos(System.nanoTime() - start).toMillis();
             if (throwable != null) {
                 Throwable cause = Throwables.unwrap(throwable);
-                if (cause instanceof HttpException http && http.statusCode() >= 400 && http.statusCode() < 500) {
+                if (cause instanceof HttpException http && (http.statusCode() == 401 || http.statusCode() == 403)) {
+                    recordAuthFailure(operation, http);
+                } else if (cause instanceof HttpException http && http.statusCode() >= 400 && http.statusCode() < 500) {
                     // client-side/business error – the API is reachable
                     recordSuccess(millis);
                     metrics.increment("api.client_errors");
@@ -170,6 +195,10 @@ public final class ProxyApiClient implements ProxyService {
                     recordFailure(operation, cause);
                 }
                 throw new java.util.concurrent.CompletionException(cause);
+            }
+            if (credentialsRejected) {
+                credentialsRejected = false;
+                logger.info("TasticGames API accepted the credentials again.");
             }
             recordSuccess(millis);
             return result;
