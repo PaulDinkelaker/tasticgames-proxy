@@ -38,3 +38,12 @@ the previous proxy version keeps working against the new API.
 
 No SFTP/panel credentials or SSH keys for MintServers were found on this machine – the deployment above must be
 executed by an operator with access (or the credentials must be provided). All artifacts are built and tested locally.
+
+## 1.0.1 notes
+* `/lobby`, `/hub`, `/l` are forwarded to the backend while the player is on a server of type LOBBY (TasticLobby's own
+  `/lobby` runs: spawn / leave the cookie open world); everywhere else the proxy transfers to a lobby.
+* Startup verifies an authenticated endpoint (`GET /api/v1/network/servers`): `401/403` -> ERROR "rejected the credentials"
+  (fix `api.authentication.api-key` / `TASTIC_API_KEY` vs. `tasticgames.security.service-auth.services.tastic-proxy`),
+  `404` -> ERROR "does not know the 1.0 endpoints" (deploy tasticgames-api 1.0). Missing key -> ERROR at startup and a
+  throttled ERROR whenever `/friend`, `/party`, `/clan` are refused in degraded mode.
+* Proxy admin commands need `tasticproxy.*` permissions - install LuckPerms-Velocity (Velocity has no op concept).
