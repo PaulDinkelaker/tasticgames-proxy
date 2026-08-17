@@ -62,7 +62,7 @@ public final class PartyCommand extends CommandSupport {
         }
         Player player = (Player) source;
         if (!partyService.available()) {
-            send(source, "social.unavailable");
+            unavailable(source, "API integration disabled - partyService offline");
             return;
         }
         PlayerRef actor = new PlayerRef(player.getUniqueId(), player.getUsername());

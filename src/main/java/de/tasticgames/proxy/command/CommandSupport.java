@@ -54,6 +54,23 @@ public abstract class CommandSupport implements SimpleCommand {
         return false;
     }
 
+    private static volatile long lastUnavailableLogAt;
+
+    /**
+     * Player-facing "unavailable" plus a throttled ERROR for operators: the social/network commands are
+     * refused because the API integration is disabled or degraded – silence here is what makes testers
+     * report "everything is temporarily unavailable" without a hint in the console.
+     */
+    protected void unavailable(CommandSource source, String reason) {
+        send(source, "social.unavailable");
+        long now = System.currentTimeMillis();
+        if (now - lastUnavailableLogAt > 60_000) {
+            lastUnavailableLogAt = now;
+            logger.error("/{} refused for {}: {} (check api.enabled, api.authentication.api-key / TASTIC_API_KEY and the API log; /tasticproxy status shows details).",
+                    commandName(), describe(source), reason);
+        }
+    }
+
     protected void send(CommandSource source, String key) {
         messages.send(source, key);
     }

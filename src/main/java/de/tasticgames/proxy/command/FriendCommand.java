@@ -48,7 +48,7 @@ public final class FriendCommand extends CommandSupport {
         }
         Player player = (Player) source;
         if (!friendService.available()) {
-            send(source, "social.unavailable");
+            unavailable(source, "API integration disabled - friendService offline");
             return;
         }
         PlayerRef actor = new PlayerRef(player.getUniqueId(), player.getUsername());

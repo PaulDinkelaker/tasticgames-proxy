@@ -56,7 +56,7 @@ public final class ClanCommand extends CommandSupport {
         }
         Player player = (Player) source;
         if (!clanService.available()) {
-            send(source, "social.unavailable");
+            unavailable(source, "API integration disabled - clanService offline");
             return;
         }
         PlayerRef actor = new PlayerRef(player.getUniqueId(), player.getUsername());
