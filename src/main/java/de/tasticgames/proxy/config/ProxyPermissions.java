@@ -18,6 +18,7 @@ public final class ProxyPermissions {
     public static final String ROUTING_BYPASS = "tasticproxy.routing.bypass";
     public static final String ROUTING_DIAGNOSE = "tasticproxy.routing.diagnose";
     public static final String SOCIAL_BYPASS_RATELIMIT = "tasticproxy.social.bypass-ratelimit";
+    public static final String PASS_ADMIN = "tasticproxy.pass.admin";
 
     private ProxyPermissions() {
     }

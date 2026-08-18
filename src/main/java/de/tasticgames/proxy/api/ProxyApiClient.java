@@ -2,6 +2,7 @@ package de.tasticgames.proxy.api;
 
 import de.tasticgames.client.LobbyApi;
 import de.tasticgames.client.NetworkApi;
+import de.tasticgames.client.PassApi;
 import de.tasticgames.client.SocialApi;
 import de.tasticgames.client.TasticApiClient;
 import de.tasticgames.client.config.ApiClientConfiguration;
@@ -137,6 +138,10 @@ public final class ProxyApiClient implements ProxyService {
 
     public LobbyApi lobby() {
         return delegate().lobby();
+    }
+
+    public PassApi pass() {
+        return delegate().pass();
     }
 
     private volatile boolean credentialsRejected;

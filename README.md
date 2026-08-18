@@ -71,13 +71,31 @@ Created with defaults on first start. Secrets should come from environment varia
 | `/friend add|accept|deny|remove|cancel <player>` · `list` · `requests` (`/friends`, `/f`) | – | friends |
 | `/party invite|accept|deny|kick|promote <player>` · `leave` · `disband` · `info` · `chat <msg>` · `warp <LOBBY|SURVIVAL>` (`/p`), `/pc <msg>` | – | parties incl. atomic-style party transfer |
 | `/clan create|info|invite|accept|deny|request|requests|acceptrequest|denyrequest|kick|promote|demote|leave|disband` (`/c`) | – | clans (alpha) |
+| `/passadmin grant|revoke <player> [season]` · `addxp <player> <amount>` · `setlevel <player> <level>` · `season <activate|end> <season>` · `season import <file>` | `tasticproxy.pass.admin` | season pass administration (the player-facing `/pass` belongs to TasticLobby) |
 
 ## Permissions
 
 `tasticproxy.admin` (all admin functions), `tasticproxy.status`, `tasticproxy.reload`, `tasticproxy.maintenance.admin`,
 `tasticproxy.maintenance.bypass`, `tasticproxy.alpha.admin`, `tasticproxy.alpha.bypass`, `tasticproxy.server.status`,
 `tasticproxy.server.manage`, `tasticproxy.player.inspect`, `tasticproxy.routing.bypass` (connect to non-accepting servers),
-`tasticproxy.routing.diagnose`, `tasticproxy.social.bypass-ratelimit`. LuckPerms assigns them.
+`tasticproxy.routing.diagnose`, `tasticproxy.social.bypass-ratelimit`, `tasticproxy.pass.admin`. LuckPerms assigns them.
+
+## Season pass
+
+The proxy never registers `/pass`, `/battlepass` or `/bp`: Velocity executes registered commands itself and never
+forwards them, so those names stay with TasticLobby, which owns the player-facing pass. The proxy contributes
+
+* `/passadmin` – premium entitlements, admin XP/level and season lifecycle through `/api/v1/pass/**`
+  (every mutating call carries its own operation/order id and is safely retryable),
+* `season import <file>` – reads a season JSON **inside the proxy data directory** (`plugins/tasticproxy/`;
+  absolute paths, `..` segments and symlinks leaving the directory are refused) and POSTs it to
+  `/admin/seasons/import`; the API's validation errors are shown to the operator instead of a generic failure,
+* level-up notifications: game servers publish the command bus topic `pass.level_up` with the flat string payload
+  `player` (UUID, optional when the command is addressed to a player), `fromLevel`, `toLevel`, `season` and
+  `rewards`. The payload is parsed defensively and delivered through the network notification service
+  (`pass.level_up`, `pass.level_up.rewards`); a broadcast is only answered by the proxy the player is on.
+
+With the API offline `/passadmin` answers "unavailable" and no pass state is invented.
 
 ## Server states
 

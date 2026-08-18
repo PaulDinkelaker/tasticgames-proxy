@@ -19,6 +19,7 @@ import de.tasticgames.proxy.command.FriendCommand;
 import de.tasticgames.proxy.command.LobbyCommand;
 import de.tasticgames.proxy.command.MaintenanceCommand;
 import de.tasticgames.proxy.command.PartyCommand;
+import de.tasticgames.proxy.command.PassAdminCommand;
 import de.tasticgames.proxy.command.ServerStatusCommand;
 import de.tasticgames.proxy.command.TasticProxyCommand;
 import de.tasticgames.proxy.config.ProxyConfiguration;
@@ -32,6 +33,7 @@ import de.tasticgames.proxy.locale.ProxyMessages;
 import de.tasticgames.proxy.maintenance.MaintenanceListener;
 import de.tasticgames.proxy.maintenance.MaintenancePingListener;
 import de.tasticgames.proxy.maintenance.MaintenanceService;
+import de.tasticgames.proxy.pass.PassService;
 import de.tasticgames.proxy.player.NetworkPlayerListener;
 import de.tasticgames.proxy.player.NetworkPlayerManager;
 import de.tasticgames.proxy.player.NetworkPlayerSession;
@@ -121,6 +123,7 @@ public final class ProxyBootstrap {
     private PartyService partyService;
     private PartyTransferService partyTransferService;
     private ClanService clanService;
+    private PassService passService;
     private NetworkPlayerListener playerListener;
 
     public ProxyBootstrap(TasticProxyPlugin plugin, ProxyServer proxyServer, Logger logger, Path dataDirectory) {
@@ -186,6 +189,8 @@ public final class ProxyBootstrap {
                     identity, logger), PartyTransferService.class);
             clanService = start(new ClanService(apiClient, configurationService, presenceService, notificationService, telemetryService,
                     rateLimiter, logger), ClanService.class);
+            passService = start(new PassService(proxyServer, apiClient, commandBus, notificationService, dataDirectory, logger),
+                    PassService.class);
 
             wireBusHandlers();
             registerListeners();
@@ -374,6 +379,8 @@ public final class ProxyBootstrap {
         command(new PartyCommand(partyService, partyTransferService, notificationService, playerLookup, proxyServer, messages, telemetryService, logger, false), "party", "p");
         command(new PartyCommand(partyService, partyTransferService, notificationService, playerLookup, proxyServer, messages, telemetryService, logger, true), "pc", "partychat");
         command(new ClanCommand(clanService, playerLookup, proxyServer, messages, telemetryService, logger), "clan", "c");
+        // no /pass, /battlepass or /bp here: registering them would permanently shadow TasticLobby's own /pass
+        command(new PassAdminCommand(passService, playerLookup, proxyServer, messages, telemetryService, logger), "passadmin");
         logger.info("Registered {} proxy commands.", commands.size());
     }
 
