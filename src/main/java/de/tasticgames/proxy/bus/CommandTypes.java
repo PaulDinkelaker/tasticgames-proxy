@@ -13,6 +13,8 @@ public final class CommandTypes {
     public static final String PARTY_TRANSFER_MEMBER_RESULT = "party.transfer_member_result";
     public static final String PLAYER_KICK = "player.kick";
     public static final String PASS_LEVEL_UP = "pass.level_up";
+    /** One chat line, broadcast to every proxy so the network shares a single chat. */
+    public static final String CHAT_MESSAGE = "chat.message";
 
     private CommandTypes() {
     }

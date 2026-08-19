@@ -69,3 +69,19 @@ language from the TasticGames account (`PlayerLanguageService`), otherwise clien
 
 `TelemetryTypes` lists every event; common fields: eventId, timestamp, source (proxy id), region, environment,
 player, session, server, correlation, outcome, duration, attributes. Never blocks; drops are counted.
+
+## Global chat
+`chat/` renders every chat line once, on the proxy: `GlobalChatService` denies the vanilla pass-through
+(`PlayerChatEvent`), sends its own line to all players on this proxy and broadcasts a `chat.message` command so
+the other proxies render the same line. Backends therefore never broadcast chat themselves - a message typed on
+survival is seen by everybody in the lobby and vice versa.
+
+`ChatFormat` builds the line from the `chat.format` template in the message files. What a player typed is
+inserted as plain text, so `<red>`, `<click:...>` and section signs stay characters instead of becoming markup;
+colour codes (`&a`) are translated only for players with `tasticgames.chat.color`. The rank prefix comes from
+`PermissionChatIdentity`: the first rank of `chat.ranks` whose permission `tasticgames.chat.rank.<rank>` the
+player has, with the prefix from `chat.prefix.<rank>` - no LuckPerms API needed on the proxy, a permission
+check is enough. A 750 ms cooldown per player and a 256 character limit keep the chat readable.
+
+The `<title>` placeholder of the format is already in place but always empty: network titles (a title under the
+nametag on every server) are not implemented yet.
