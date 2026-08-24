@@ -191,10 +191,13 @@ public final class ProxyBootstrap {
                     rateLimiter, logger), ClanService.class);
             passService = start(new PassService(proxyServer, apiClient, commandBus, notificationService, dataDirectory, logger),
                     PassService.class);
+            // clan tags for the chat line: cached per online player, refreshed in the background
+            clanTagService = start(new de.tasticgames.proxy.chat.ClanTagService(clanService, logger),
+                    de.tasticgames.proxy.chat.ClanTagService.class);
             // one chat for the whole network: the proxy renders every line and forwards it to the other proxies
             chatService = start(new de.tasticgames.proxy.chat.GlobalChatService(proxyServer, commandBus, messages,
-                    new de.tasticgames.proxy.chat.PermissionChatIdentity(messages), true, java.time.Duration.ofMillis(750),
-                    256, logger), de.tasticgames.proxy.chat.GlobalChatService.class);
+                    new de.tasticgames.proxy.chat.PermissionChatIdentity(messages, clanTagService), true,
+                    java.time.Duration.ofMillis(750), 256, logger), de.tasticgames.proxy.chat.GlobalChatService.class);
 
             wireBusHandlers();
             registerListeners();
@@ -319,6 +322,7 @@ public final class ProxyBootstrap {
     }
 
     private de.tasticgames.proxy.chat.GlobalChatService chatService;
+    private de.tasticgames.proxy.chat.ClanTagService clanTagService;
 
     private void registerListeners() {
         playerListener = new NetworkPlayerListener(playerManager, presenceService, routingService, configurationService, languageService,
@@ -338,6 +342,7 @@ public final class ProxyBootstrap {
         register(new FallbackListener(fallbackService, logger));
         register(new DrainListener(drainService));
         register(chatService);
+        register(clanTagService);
         logger.info("Registered {} proxy listeners.", listeners.size());
     }
 

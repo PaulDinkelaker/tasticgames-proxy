@@ -71,17 +71,32 @@ language from the TasticGames account (`PlayerLanguageService`), otherwise clien
 player, session, server, correlation, outcome, duration, attributes. Never blocks; drops are counted.
 
 ## Global chat
-`chat/` renders every chat line once, on the proxy: `GlobalChatService` denies the vanilla pass-through
-(`PlayerChatEvent`), sends its own line to all players on this proxy and broadcasts a `chat.message` command so
-the other proxies render the same line. Backends therefore never broadcast chat themselves - a message typed on
-survival is seen by everybody in the lobby and vice versa.
+`chat/` renders every chat line once, on the proxy: `GlobalChatService` sees the message (`PlayerChatEvent`)
+and puts a `chat.message` command on the bus, which delivers it to every proxy - this one included, so the line
+is rendered exactly once per proxy. A message typed on survival is seen by everybody in the lobby and vice versa.
 
-`ChatFormat` builds the line from the `chat.format` template in the message files. What a player typed is
-inserted as plain text, so `<red>`, `<click:...>` and section signs stay characters instead of becoming markup;
-colour codes (`&a`) are translated only for players with `tasticgames.chat.color`. The rank prefix comes from
-`PermissionChatIdentity`: the first rank of `chat.ranks` whose permission `tasticgames.chat.rank.<rank>` the
-player has, with the prefix from `chat.prefix.<rank>` - no LuckPerms API needed on the proxy, a permission
-check is enough. A 750 ms cooldown per player and a 256 character limit keep the chat readable.
+The message is deliberately **not** denied on the proxy: since 1.19.1 cancelling a signed chat message there
+disconnects the player ("a proxy plugin caused an illegal protocol state"). The backend drops it instead -
+TasticCore cancels the chat event on every server (`chat.handled-by-proxy` in core.yml). Without TasticCore, or
+with that switch off, every message would appear twice: once from the backend, once from the proxy.
 
-The `<title>` placeholder of the format is already in place but always empty: network titles (a title under the
-nametag on every server) are not implemented yet.
+`ChatFormat` builds the line from the `chat.format` template in the message files:
+`[TAG] Name >> Message`. A 750 ms cooldown per player and a 256 character limit keep the chat readable.
+
+The **clan tag** only appears for players in a clan. `ClanTagService` caches it per online player (loaded on
+login, refreshed at most every two minutes), because chat is far too frequent for an API call per message; until
+the first load finishes a line simply has no tag. The API stores only the clan *name* today, so `ClanTag` derives
+both the short form and a colour gradient from it - deterministically, so the same clan looks identical on every
+proxy and after every restart. Giving clans a real tag and colour is one API field away and would replace exactly
+that one method.
+
+The **name** carries the colour of the player's highest rank: the first rank of `chat.ranks` whose permission
+`tasticgames.chat.rank.<rank>` the player has, painted with `chat.name-color.<rank>` (grey by default). That
+deliberately needs no LuckPerms API on the proxy - a permission check is enough.
+
+**Colour codes do not exist in chat.** `&a`, `§a` and `&#rrggbb` are removed before rendering, so `&aHallo!`
+arrives as a plain grey `Hallo!` rather than as green text or as visible code characters. What a player typed is
+inserted unparsed, so `<red>` and `<click:...>` stay the characters they typed. Everything coloured in the line
+comes from the server.
+
+Network titles are not part of the chat line; they live above the player's head and belong to TasticCore.

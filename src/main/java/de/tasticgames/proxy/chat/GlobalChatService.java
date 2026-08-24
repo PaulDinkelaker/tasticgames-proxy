@@ -8,6 +8,7 @@ import com.velocitypowered.api.proxy.ProxyServer;
 import de.tasticgames.proxy.bus.CommandTypes;
 import de.tasticgames.proxy.bus.NetworkCommand;
 import de.tasticgames.proxy.bus.NetworkCommandBus;
+import de.tasticgames.proxy.locale.ProxyLanguage;
 import de.tasticgames.proxy.locale.ProxyMessages;
 import de.tasticgames.proxy.service.ProxyService;
 import net.kyori.adventure.text.Component;
@@ -26,13 +27,18 @@ import java.util.concurrent.ConcurrentHashMap;
  * same layout everywhere.
  * <p>
  * The proxy is the only place where this can be done once instead of per backend: it sees every message
- * ({@link PlayerChatEvent}), denies the pass-through and sends its own rendered line to all players on this
- * proxy plus – through the command bus – to the other proxies. The backends therefore never broadcast chat
- * themselves.
+ * ({@link PlayerChatEvent}) and puts its own rendered line on the command bus, which delivers it to every
+ * proxy - this one included.
+ * <p>
+ * The message is deliberately <em>not</em> denied here. Since 1.19.1 a signed chat message cannot be
+ * cancelled on the proxy: Velocity disconnects the player with "a proxy plugin caused an illegal protocol
+ * state". The backend drops it instead - TasticCore cancels the chat event on every server
+ * ({@code chat.handled-by-proxy} in core.yml), so the line still exists exactly once. Without TasticCore
+ * (or with that switch off) players would see the message twice: once from the backend, once from here.
  * <p>
  * What a player typed is inserted as plain text ({@link ChatFormat}), so no one can inject colours, hover text
- * or click actions. The rank prefix and the network title come from the player's permissions/profile, not from
- * the message.
+ * or click actions - colour codes are removed rather than rendered. Everything coloured in the line comes from
+ * the server: the clan tag in front of the name and the rank colour of the name itself.
  */
 public final class GlobalChatService implements ProxyService {
 
@@ -41,8 +47,8 @@ public final class GlobalChatService implements ProxyService {
     private static final String UUID_KEY = "uuid";
     private static final String SERVER = "server";
     private static final String MESSAGE = "message";
-    private static final String PREFIX = "prefix";
-    private static final String TITLE = "title";
+    private static final String CLAN = "clan";
+    private static final String NAME = "name";
 
     private final ProxyServer proxyServer;
     private final NetworkCommandBus bus;
@@ -54,17 +60,14 @@ public final class GlobalChatService implements ProxyService {
     private final int maxLength;
     private final Map<UUID, Long> lastMessageAt = new ConcurrentHashMap<>();
 
-    /** Supplies what the network knows about a player: rank prefix and title. */
+    /** Supplies what the network knows about a player: their coloured name and their clan tag. */
     public interface ChatIdentityProvider {
 
-        /** MiniMessage prefix of the player's rank, or an empty string. */
-        String prefix(Player player);
+        /** The player's name including the colour of their rank, as MiniMessage. */
+        String name(Player player);
 
-        /** The player's network title, or an empty string. */
-        String title(Player player);
-
-        /** Whether the player may use colour codes in chat. */
-        boolean mayUseColors(Player player);
+        /** The clan tag shown in front of the name, as MiniMessage, or an empty string. */
+        String clanTag(Player player);
     }
 
     public GlobalChatService(ProxyServer proxyServer, NetworkCommandBus bus, ProxyMessages messages,
@@ -108,8 +111,6 @@ public final class GlobalChatService implements ProxyService {
         }
         Player player = event.getPlayer();
         String message = ChatFormat.sanitize(event.getMessage());
-        // the backend must not broadcast the same message a second time
-        event.setResult(PlayerChatEvent.ChatResult.denied());
 
         if (ChatFormat.isBlank(message)) {
             return;
@@ -124,17 +125,15 @@ public final class GlobalChatService implements ProxyService {
         String server = player.getCurrentServer()
                 .map(connection -> connection.getServerInfo().getName())
                 .orElse("");
-        String prefix = identity.prefix(player);
-        String title = identity.title(player);
-
-        broadcastLocally(prefix, title, player.getUsername(), server, message, identity.mayUseColors(player));
+        // no local rendering here: broadcast() delivers the command to this proxy as well, so rendering
+        // it twice would show the line twice
         Map<String, String> payload = new LinkedHashMap<>();
         payload.put(UUID_KEY, player.getUniqueId().toString());
         payload.put(PLAYER, player.getUsername());
         payload.put(SERVER, server);
         payload.put(MESSAGE, message);
-        payload.put(PREFIX, prefix);
-        payload.put(TITLE, title);
+        payload.put(CLAN, identity.clanTag(player));
+        payload.put(NAME, identity.name(player));
         bus.broadcast(CommandTypes.CHAT_MESSAGE, payload).exceptionally(throwable -> {
             // the message was delivered on this proxy; the other proxies simply miss it
             logger.debug("Chat of {} could not be forwarded to the other proxies: {}", player.getUsername(),
@@ -143,11 +142,12 @@ public final class GlobalChatService implements ProxyService {
         });
     }
 
-    /** Renders the line for every player on this proxy. */
-    private void broadcastLocally(String prefix, String title, String player, String server, String message, boolean colors) {
+    /** Renders the line for every player on this proxy, each in their own language. */
+    private void broadcastLocally(String clan, String name, String player, String server, String message) {
         for (Player receiver : proxyServer.getAllPlayers()) {
-            String template = messages.raw(messages.languageOf(receiver), "chat.format");
-            Component line = ChatFormat.render(template, prefix, title, player, ChatFormat.serverTag(server), message, colors);
+            ProxyLanguage language = messages.languageOf(receiver);
+            String template = messages.raw(language, "chat.format");
+            Component line = ChatFormat.render(template, clan, name, player, ChatFormat.serverTag(server), message);
             receiver.sendMessage(line);
         }
         logger.info("[chat] {}{}: {}", ChatFormat.serverTag(server).isEmpty() ? "" : "(" + ChatFormat.serverTag(server) + ") ",
@@ -161,9 +161,10 @@ public final class GlobalChatService implements ProxyService {
         if (player == null || message == null) {
             return CompletableFuture.completedFuture("ignored");
         }
-        // colours were already resolved by the proxy that accepted the message: a remote line is never
-        // re-parsed with the sender's permissions
-        broadcastLocally(command.get(PREFIX), command.get(TITLE), player, command.get(SERVER), message, false);
+        // clan tag and name colour were resolved by the proxy that accepted the message; this proxy
+        // renders them as they arrived instead of looking the player up again
+        broadcastLocally(command.getOrDefault(CLAN, ""), command.getOrDefault(NAME, player), player,
+                command.get(SERVER), message);
         return CompletableFuture.completedFuture("delivered");
     }
 

@@ -8,52 +8,63 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
+import java.util.Optional;
 
 /**
- * Chat identity from permissions: the first rank of {@code chat.ranks} whose permission the player has wins,
- * and its {@code chat.prefix.<rank>} is put in front of the name.
- * <p>
- * This deliberately needs no LuckPerms API on the proxy – a permission check is enough, and LuckPerms (or any
- * other permission plugin) answers it. Ranks and prefixes live in the proxy message files, so an operator
- * changes them without a rebuild.
- * <p>
- * Titles are not wired yet: {@link #title(Player)} returns an empty string until the network title system
- * exists, and the {@code <title>} placeholder of the chat format then simply renders as nothing.
+ * Wer jemand im Chat ist: der Rang bestimmt die Farbe des Namens, der Clan das Kürzel davor.
+ *
+ * <p>Der Rang kommt aus den Rechten – der erste Rang aus {@code chat.ranks}, dessen Permission
+ * {@code tasticgames.chat.rank.<rang>} der Spieler hat, gewinnt, und {@code chat.name-color.<rang>}
+ * färbt seinen Namen. Das braucht bewusst keine LuckPerms-API auf dem Proxy: eine Rechteabfrage
+ * genügt, und LuckPerms (oder jedes andere Rechteplugin) beantwortet sie. Ränge und Farben stehen in
+ * den Nachrichtendateien, ein Betreiber ändert sie also ohne Neubau.</p>
  */
 public final class PermissionChatIdentity implements GlobalChatService.ChatIdentityProvider {
 
-    /** Permission that allows colour codes in chat. */
-    public static final String COLOR_PERMISSION = "tasticgames.chat.color";
     private static final String RANK_PERMISSION = "tasticgames.chat.rank.";
+    /** Farbe für alle ohne besonderen Rang. */
+    private static final String DEFAULT_COLOR_KEY = "chat.name-color.default";
 
     private final ProxyMessages messages;
+    private final ClanTagService clans;
 
-    public PermissionChatIdentity(ProxyMessages messages) {
+    public PermissionChatIdentity(ProxyMessages messages, ClanTagService clans) {
         this.messages = Objects.requireNonNull(messages, "messages");
+        this.clans = Objects.requireNonNull(clans, "clans");
     }
 
+    /** Der Name in der Farbe seines Ranges, als fertige MiniMessage. */
     @Override
-    public String prefix(Player player) {
+    public String name(Player player) {
+        return colorOf(player) + player.getUsername();
+    }
+
+    /** Das Clan-Kürzel vor dem Namen, oder ein leerer Text. */
+    @Override
+    public String clanTag(Player player) {
+        Optional<ClanTag> tag = clans.tagOf(player);
+        if (tag.isEmpty()) {
+            return "";
+        }
+        String template = messages.raw(ProxyLanguage.ENGLISH, "chat.clan-tag");
+        return template.startsWith("<red>[chat.clan-tag") ? "" : tag.get().render(template);
+    }
+
+    /** Die MiniMessage-Farbe des höchsten Ranges, den der Spieler hat. */
+    private String colorOf(Player player) {
         for (String rank : ranks()) {
             if (player.hasPermission(RANK_PERMISSION + rank)) {
-                String prefix = messages.raw(ProxyLanguage.ENGLISH, "chat.prefix." + rank);
-                return prefix.startsWith("<red>[chat.prefix.") ? "" : prefix;
+                String color = messages.raw(ProxyLanguage.ENGLISH, "chat.name-color." + rank);
+                if (!color.startsWith("<red>[chat.name-color.")) {
+                    return color;
+                }
             }
         }
-        return "";
+        String fallback = messages.raw(ProxyLanguage.ENGLISH, DEFAULT_COLOR_KEY);
+        return fallback.startsWith("<red>[" + DEFAULT_COLOR_KEY) ? "<gray>" : fallback;
     }
 
-    @Override
-    public String title(Player player) {
-        return ""; // network titles are not implemented yet – see docs/tasticproxy-architecture.md
-    }
-
-    @Override
-    public boolean mayUseColors(Player player) {
-        return player.hasPermission(COLOR_PERMISSION);
-    }
-
-    /** Ranks in priority order, highest first. */
+    /** Ränge in absteigender Reihenfolge. */
     private List<String> ranks() {
         String raw = messages.raw(ProxyLanguage.ENGLISH, "chat.ranks");
         if (raw.startsWith("<red>[")) {

@@ -9,51 +9,53 @@ import java.util.Locale;
 import java.util.Objects;
 
 /**
- * Builds one chat line from a MiniMessage template. Pure string work so the escaping rules can be tested
- * without a proxy.
- * <p>
- * What a player types is never parsed as MiniMessage: it goes in as plain text through a placeholder, so
- * {@code <red>} in a message stays the four characters a player typed and nobody can inject click actions,
- * hover text or colours into the chat. Colour codes are a permission ({@code tasticgames.chat.color}) and are
- * translated from the legacy {@code &a} form, which is what players know.
+ * Baut eine Chatzeile aus einer MiniMessage-Vorlage. Reine Zeichenkettenarbeit, damit die
+ * Escaping-Regeln ohne Proxy prüfbar sind.
+ *
+ * <p>Die Zeile besteht aus drei Teilen: dem Clan-Kürzel (nur wenn der Spieler in einem Clan ist),
+ * dem Namen in der Farbe seines Ranges und der Nachricht. Was ein Spieler tippt, wird niemals als
+ * MiniMessage gelesen – es geht als reiner Text durch einen Platzhalter. Farbcodes gibt es im Chat
+ * nicht: {@code &a} und {@code §a} werden entfernt, nicht angezeigt und nicht umgesetzt. Damit kann
+ * niemand Farben, Hover-Texte oder Klickbefehle in den Chat schreiben, und die Zeile bleibt
+ * einheitlich lesbar.</p>
  */
 public final class ChatFormat {
 
     private static final MiniMessage MINI = MiniMessage.miniMessage();
-    /** Legacy colour codes players type; translated to MiniMessage tags when they may use them. */
-    private static final String LEGACY_CODES = "0123456789abcdefklmnor";
+    /** Die klassischen Codes, die Spieler tippen – sie werden samt Zeichen davor entfernt. */
+    private static final String LEGACY_CODES = "0123456789abcdefklmnorxABCDEFKLMNORX";
 
     private ChatFormat() {
     }
 
     /**
-     * Renders one chat line.
+     * Rendert eine Chatzeile.
      *
-     * @param template MiniMessage template with {@code <player>}, {@code <message>}, {@code <server>},
-     *                 {@code <prefix>} and {@code <title>} placeholders
-     * @param prefix   rank prefix (already MiniMessage/legacy formatted, comes from the server, not a player)
-     * @param title    the player's network title, or an empty string
-     * @param player   the player's name
-     * @param server   display name of the server the message came from
-     * @param message  raw text the player typed
-     * @param colors   whether the player may use colour codes
+     * @param template MiniMessage-Vorlage mit {@code <clan>}, {@code <name>}, {@code <player>},
+     *                 {@code <server>} und {@code <message>}
+     * @param clan     fertiges Clan-Kürzel als MiniMessage, oder leer
+     * @param name     Name samt Rangfarbe als MiniMessage (kommt vom Server, nicht vom Spieler)
+     * @param player   reiner Name des Spielers
+     * @param server   Anzeigename des Servers, von dem die Nachricht kam
+     * @param message  was der Spieler getippt hat
      */
-    public static Component render(String template, String prefix, String title, String player, String server,
-                                   String message, boolean colors) {
+    public static Component render(String template, String clan, String name, String player, String server,
+                                   String message) {
         Objects.requireNonNull(template, "template");
-        String text = sanitize(message);
         TagResolver resolver = TagResolver.resolver(
-                Placeholder.parsed("prefix", prefix == null ? "" : prefix),
-                Placeholder.parsed("title", title == null ? "" : title),
+                Placeholder.parsed("clan", clan == null ? "" : clan),
+                Placeholder.parsed("name", name == null ? "" : name),
                 Placeholder.unparsed("player", player == null ? "" : player),
                 Placeholder.unparsed("server", server == null ? "" : server),
-                colors ? Placeholder.parsed("message", legacyToMiniMessage(text)) : Placeholder.unparsed("message", text));
+                Placeholder.unparsed("message", sanitize(message)));
         return MINI.deserialize(template, resolver);
     }
 
     /**
-     * Removes what must never reach other players: section signs (a client would render them as colours),
-     * control characters and trailing whitespace. The message itself is kept as typed.
+     * Entfernt, was nie bei anderen Spielern ankommen darf: Farbcodes ({@code &a}, {@code §a},
+     * {@code &#rrggbb}), Steuerzeichen und Leerraum am Rand. Der getippte Text selbst bleibt
+     * unverändert – nur die Codes verschwinden, sodass aus {@code &aHallo!} ein schlichtes
+     * {@code Hallo!} wird.
      */
     public static String sanitize(String message) {
         if (message == null) {
@@ -62,12 +64,20 @@ public final class ChatFormat {
         StringBuilder clean = new StringBuilder(message.length());
         for (int i = 0; i < message.length(); i++) {
             char c = message.charAt(i);
-            if (c == '§') {
-                // the sign and the code behind it go together, otherwise "§chello" would leave "chello"
-                if (i + 1 < message.length() && LEGACY_CODES.indexOf(Character.toLowerCase(message.charAt(i + 1))) >= 0) {
-                    i++;
+            if (c == '§' || c == '&') {
+                char next = i + 1 < message.length() ? message.charAt(i + 1) : 0;
+                if (next == '#' && i + 7 < message.length() && isHex(message, i + 2, 6)) {
+                    i += 7; // &#rrggbb
+                    continue;
                 }
-                continue;
+                if (LEGACY_CODES.indexOf(next) >= 0) {
+                    i++; // das Zeichen und sein Code gehören zusammen
+                    continue;
+                }
+                if (c == '§') {
+                    continue; // ein einzelnes § hat im Chat nichts zu suchen
+                }
+                // ein einzelnes & ist ein normales Zeichen ("Tom & Jerry")
             }
             if (c == '\n' || c == '\r' || (c < ' ' && c != '\t')) {
                 continue;
@@ -77,59 +87,21 @@ public final class ChatFormat {
         return clean.toString().strip();
     }
 
-    /** {@code &a} becomes {@code <green>}: players type the legacy codes, MiniMessage renders them. */
-    static String legacyToMiniMessage(String message) {
-        StringBuilder out = new StringBuilder(message.length());
-        for (int i = 0; i < message.length(); i++) {
-            char c = message.charAt(i);
-            if (c != '&' || i + 1 >= message.length()) {
-                out.append(c);
-                continue;
+    private static boolean isHex(String text, int from, int length) {
+        for (int i = from; i < from + length; i++) {
+            if (Character.digit(text.charAt(i), 16) < 0) {
+                return false;
             }
-            char code = Character.toLowerCase(message.charAt(i + 1));
-            if (LEGACY_CODES.indexOf(code) < 0) {
-                out.append(c);
-                continue;
-            }
-            out.append('<').append(tag(code)).append('>');
-            i++;
         }
-        return out.toString();
+        return true;
     }
 
-    private static String tag(char code) {
-        return switch (code) {
-            case '0' -> "black";
-            case '1' -> "dark_blue";
-            case '2' -> "dark_green";
-            case '3' -> "dark_aqua";
-            case '4' -> "dark_red";
-            case '5' -> "dark_purple";
-            case '6' -> "gold";
-            case '7' -> "gray";
-            case '8' -> "dark_gray";
-            case '9' -> "blue";
-            case 'a' -> "green";
-            case 'b' -> "aqua";
-            case 'c' -> "red";
-            case 'd' -> "light_purple";
-            case 'e' -> "yellow";
-            case 'f' -> "white";
-            case 'k' -> "obfuscated";
-            case 'l' -> "bold";
-            case 'm' -> "strikethrough";
-            case 'n' -> "underlined";
-            case 'o' -> "italic";
-            default -> "reset";
-        };
-    }
-
-    /** Whether the message is worth sending at all (empty after sanitising = nothing was typed). */
+    /** Ob die Nachricht überhaupt etwas enthält (nach dem Entfernen der Codes). */
     public static boolean isBlank(String message) {
         return sanitize(message).isEmpty();
     }
 
-    /** Short tag of a server id for the chat line: {@code survival-1} becomes {@code SURVIVAL}. */
+    /** Kurzform einer Server-ID für die Chatzeile: {@code survival-1} wird zu {@code SURVIVAL}. */
     public static String serverTag(String serverId) {
         if (serverId == null || serverId.isBlank()) {
             return "";

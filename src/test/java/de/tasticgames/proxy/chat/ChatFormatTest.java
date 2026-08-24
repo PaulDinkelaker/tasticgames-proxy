@@ -8,66 +8,69 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/** The chat line is built from a template; what a player typed never becomes markup. */
+/**
+ * Die Chatzeile entsteht aus einer Vorlage. Was ein Spieler tippt, wird niemals zu Markup – und
+ * Farbcodes verschwinden, statt zu färben oder als Zeichen stehen zu bleiben.
+ */
 class ChatFormatTest {
 
-    private static final String TEMPLATE = "<prefix><white><player><dark_gray> » <gray><message>";
+    private static final String TEMPLATE = "<clan><name><dark_gray> >> <gray><message>";
 
     private static String plain(Component component) {
         return PlainTextComponentSerializer.plainText().serialize(component);
     }
 
     @Test
-    void nameAndMessageEndUpInTheLine() {
-        Component line = ChatFormat.render(TEMPLATE, "<red>[Admin] ", "", "Ctastic_official", "SURVIVAL", "hello world", false);
-        assertEquals("[Admin] Ctastic_official » hello world", plain(line));
+    void ohneClanStehtNurDerName() {
+        Component line = ChatFormat.render(TEMPLATE, "", "<gray>Ctastic_official", "Ctastic_official", "SURVIVAL",
+                "hello world");
+        assertEquals("Ctastic_official >> hello world", plain(line));
     }
 
     @Test
-    void aMessageCannotInjectMarkup() {
-        Component line = ChatFormat.render(TEMPLATE, "", "", "Griefer", "LOBBY",
-                "<red><click:run_command:'/op Griefer'>click me</click>", false);
-        assertEquals("Griefer » <red><click:run_command:'/op Griefer'>click me</click>", plain(line),
-                "the tags stay the characters the player typed");
+    void mitClanStehtDasKuerzelDavor() {
+        String clan = ClanTag.of("Bakers United").render("<gradient:<color1>:<color2>>[<tag>]</gradient> ");
+        Component line = ChatFormat.render(TEMPLATE, clan, "<red>Admin1", "Admin1", "LOBBY", "hi");
+        assertEquals("[BAKER] Admin1 >> hi", plain(line));
     }
 
     @Test
-    void colourCodesOnlyWorkWithThePermission() {
-        String message = "&cred &lbold";
-        assertEquals("Player » &cred &lbold", plain(ChatFormat.render(TEMPLATE, "", "", "Player", "LOBBY", message, false)));
-        assertEquals("Player » red bold", plain(ChatFormat.render(TEMPLATE, "", "", "Player", "LOBBY", message, true)),
-                "with the permission the codes become colours instead of text");
+    void eineNachrichtKannKeinMarkupEinschleusen() {
+        Component line = ChatFormat.render(TEMPLATE, "", "<gray>Griefer", "Griefer", "LOBBY",
+                "<red><click:run_command:'/op Griefer'>click me</click>");
+        assertEquals("Griefer >> <red><click:run_command:'/op Griefer'>click me</click>", plain(line),
+                "die Zeichen bleiben genau das, was der Spieler getippt hat");
     }
 
     @Test
-    void sectionSignsAndControlCharactersNeverSurvive() {
+    void farbcodesWerdenEntferntStattAngezeigtOderGefaerbt() {
+        assertEquals("Hallo!", ChatFormat.sanitize("&aHallo!"));
+        assertEquals("red bold", ChatFormat.sanitize("&cred &lbold"));
         assertEquals("hello", ChatFormat.sanitize("§chello"));
-        assertEquals("a b", ChatFormat.sanitize("a\nb".replace("\n", " ")));
-        assertEquals("clean", ChatFormat.sanitize("  clean\r\n "));
-        assertTrue(ChatFormat.isBlank("   "));
-        assertFalse(ChatFormat.isBlank(" x "));
+        assertEquals("bunt", ChatFormat.sanitize("&#ff00ffbunt"), "auch Hex-Codes verschwinden");
+
+        Component line = ChatFormat.render(TEMPLATE, "", "<gray>Player", "Player", "LOBBY", "&aHallo!");
+        assertEquals("Player >> Hallo!", plain(line));
     }
 
     @Test
-    void legacyCodesBecomeMiniMessageTags() {
-        assertEquals("<red>hi", ChatFormat.legacyToMiniMessage("&chi"));
-        assertEquals("<bold><green>hi", ChatFormat.legacyToMiniMessage("&l&ahi"));
-        assertEquals("a & b", ChatFormat.legacyToMiniMessage("a & b"), "a lone ampersand stays text");
-        assertEquals("100&%", ChatFormat.legacyToMiniMessage("100&%"), "an unknown code stays text");
+    void einEinzelnesUndZeichenBleibtStehen() {
+        assertEquals("Tom & Jerry", ChatFormat.sanitize("Tom & Jerry"), "das & ist hier ein normales Zeichen");
+        assertEquals("100% & mehr", ChatFormat.sanitize("100% & mehr"));
     }
 
     @Test
-    void theServerTagIsTheShortUpperCaseName() {
+    void steuerzeichenUndRandLeerraumVerschwinden() {
+        assertEquals("ab", ChatFormat.sanitize("a\nb"), "Zeilenumbrüche fallen weg, statt die Zeile zu spalten");
+        assertEquals("hi", ChatFormat.sanitize("  hi  "));
+        assertTrue(ChatFormat.isBlank("&a&b"), "eine Nachricht aus reinen Farbcodes ist leer");
+        assertFalse(ChatFormat.isBlank("&aok"));
+    }
+
+    @Test
+    void serverKuerzel() {
         assertEquals("SURVIVAL", ChatFormat.serverTag("survival-1"));
         assertEquals("LOBBY", ChatFormat.serverTag("lobby"));
         assertEquals("", ChatFormat.serverTag(""));
-        assertEquals("", ChatFormat.serverTag(null));
-    }
-
-    @Test
-    void prefixAndTitleAreRenderedAsMarkupBecauseTheyComeFromTheNetwork() {
-        Component line = ChatFormat.render("<prefix><title><player>: <message>", "<red>[Admin] ", "<gold>[Baker] ",
-                "Someone", "LOBBY", "hi", false);
-        assertEquals("[Admin] [Baker] Someone: hi", plain(line));
     }
 }
