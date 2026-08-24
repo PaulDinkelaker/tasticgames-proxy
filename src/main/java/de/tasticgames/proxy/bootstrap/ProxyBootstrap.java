@@ -85,6 +85,12 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 public final class ProxyBootstrap {
 
+    /**
+     * Exact numeric equivalent of Velocity's former PostOrder.EARLY.
+     * Higher priorities execute earlier.
+     */
+    private static final short EARLY_EVENT_PRIORITY = 16_383;
+
     private final TasticProxyPlugin plugin;
     private final ProxyServer proxyServer;
     private final Logger logger;
@@ -125,6 +131,8 @@ public final class ProxyBootstrap {
     private ClanService clanService;
     private PassService passService;
     private NetworkPlayerListener playerListener;
+    private de.tasticgames.proxy.chat.GlobalChatService chatService;
+    private de.tasticgames.proxy.chat.ClanTagService clanTagService;
 
     public ProxyBootstrap(TasticProxyPlugin plugin, ProxyServer proxyServer, Logger logger, Path dataDirectory) {
         this.plugin = Objects.requireNonNull(plugin, "plugin");
@@ -191,9 +199,11 @@ public final class ProxyBootstrap {
                     rateLimiter, logger), ClanService.class);
             passService = start(new PassService(proxyServer, apiClient, commandBus, notificationService, dataDirectory, logger),
                     PassService.class);
+
             // clan tags for the chat line: cached per online player, refreshed in the background
             clanTagService = start(new de.tasticgames.proxy.chat.ClanTagService(clanService, logger),
                     de.tasticgames.proxy.chat.ClanTagService.class);
+
             // one chat for the whole network: the proxy renders every line and forwards it to the other proxies
             chatService = start(new de.tasticgames.proxy.chat.GlobalChatService(proxyServer, commandBus, messages,
                     new de.tasticgames.proxy.chat.PermissionChatIdentity(messages, clanTagService), true,
@@ -203,6 +213,7 @@ public final class ProxyBootstrap {
             registerListeners();
             registerCommands();
             proxyRegistryService.markOnline();
+
             logger.info("TasticProxy {} bootstrap finished in {} ms ({} services, {} listeners, {} commands).", buildInfo.version(),
                     (System.nanoTime() - startNanos) / 1_000_000, started.size(), listeners.size(), commands.size());
         } catch (Exception exception) {
@@ -243,8 +254,9 @@ public final class ProxyBootstrap {
             }
             return;
         }
+
         CompletableFuture<?> health = apiClient.call("health", client -> client.health().thenAccept(h ->
-                logger.info("API connection established: {} {} [{}].", h.service(), h.version(), h.status())))
+                        logger.info("API connection established: {} {} [{}].", h.service(), h.version(), h.status())))
                 .thenCompose(ignored -> apiClient.call("network.servers", client -> client.network().listServers().thenAccept(servers ->
                         logger.info("API authentication verified for service '{}' ({} network servers registered).",
                                 config.api().serviceName(), servers.size()))))
@@ -257,6 +269,7 @@ public final class ProxyBootstrap {
                     }
                     throw new java.util.concurrent.CompletionException(cause);
                 });
+
         if (config.api().requireOnStartup()) {
             health.get(config.api().requestTimeout().toMillis() + 1000, java.util.concurrent.TimeUnit.MILLISECONDS);
         } else {
@@ -272,66 +285,126 @@ public final class ProxyBootstrap {
             maintenanceService.refresh();
             return CompletableFuture.completedFuture("refreshed");
         });
+
         commandBus.subscribe(CommandTypes.ALPHA_CHANGED, command -> {
             alphaAccessService.refresh();
             return CompletableFuture.completedFuture("refreshed");
         });
+
         commandBus.subscribe(CommandTypes.SERVER_STATE_CHANGED, command -> {
             serverRegistryService.synchronize();
             return CompletableFuture.completedFuture("synced");
         });
+
         commandBus.subscribe(CommandTypes.PLAYER_KICK, command -> {
-            Optional<Player> player = command.targetPlayerUuid() == null ? Optional.empty() : proxyServer.getPlayer(command.targetPlayerUuid());
-            player.ifPresent(p -> p.disconnect(messages.get(p, command.getOrDefault("key", "kick.generic"), Map.of("reason", command.getOrDefault("reason", "")))));
+            Optional<Player> player = command.targetPlayerUuid() == null
+                    ? Optional.empty()
+                    : proxyServer.getPlayer(command.targetPlayerUuid());
+
+            player.ifPresent(p -> p.disconnect(messages.get(
+                    p,
+                    command.getOrDefault("key", "kick.generic"),
+                    Map.of("reason", command.getOrDefault("reason", ""))
+            )));
+
             return CompletableFuture.completedFuture(player.isPresent() ? "kicked" : "not here");
         });
+
         commandBus.subscribe(CommandTypes.PLAYER_TRANSFER, this::handleTransferCommand);
         commandBus.subscribe(CommandTypes.PARTY_TRANSFER, this::handleTransferCommand);
 
         // propagate central changes made on this proxy to the others (they re-pull the central state)
-        maintenanceService.onChange(state -> commandBus.broadcast(CommandTypes.MAINTENANCE_CHANGED, Map.of("enabled", String.valueOf(state.enabled()))));
-        serverRegistryService.onStateChanged("bus", server -> commandBus.broadcast(CommandTypes.SERVER_STATE_CHANGED,
-                Map.of("server", server.serverId(), "state", server.adminState().name())));
+        maintenanceService.onChange(state -> commandBus.broadcast(
+                CommandTypes.MAINTENANCE_CHANGED,
+                Map.of("enabled", String.valueOf(state.enabled()))
+        ));
+
+        serverRegistryService.onStateChanged("bus", server -> commandBus.broadcast(
+                CommandTypes.SERVER_STATE_CHANGED,
+                Map.of("server", server.serverId(), "state", server.adminState().name())
+        ));
     }
 
     /** Backend (gateway) transfer requests arrive via the API command bus. */
     private CompletableFuture<String> handleTransferCommand(NetworkCommand command) {
-        UUID playerUuid = command.targetPlayerUuid() != null ? command.targetPlayerUuid()
-                : command.get("playerUuid") != null ? UUID.fromString(command.get("playerUuid")) : null;
+        UUID playerUuid = command.targetPlayerUuid() != null
+                ? command.targetPlayerUuid()
+                : command.get("playerUuid") != null
+                ? UUID.fromString(command.get("playerUuid"))
+                : null;
+
         if (playerUuid == null) {
             return CompletableFuture.completedFuture("no player");
         }
+
         Player player = proxyServer.getPlayer(playerUuid).orElse(null);
+
         if (player == null) {
             return CompletableFuture.completedFuture("player not here");
         }
+
         ServerType type = ServerType.find(command.get("targetType")).orElse(null);
         String serverId = command.get("targetServerId");
+
         if (type == null && (serverId == null || serverId.isBlank() || serverId.equals("null"))) {
             return CompletableFuture.completedFuture("no target");
         }
-        boolean party = CommandTypes.PARTY_TRANSFER.equals(command.type()) || "true".equals(command.get("partyTransfer"));
+
+        boolean party =
+                CommandTypes.PARTY_TRANSFER.equals(command.type())
+                        || "true".equals(command.get("partyTransfer"));
+
         if (party) {
-            return partyTransferService.transferParty(player, type, serverId == null || serverId.equals("null") ? null : serverId, TransferReason.GATEWAY)
-                    .thenApply(outcome -> outcome.state().name() + (outcome.message().isBlank() ? "" : ": " + outcome.message()));
+            return partyTransferService.transferParty(
+                            player,
+                            type,
+                            serverId == null || serverId.equals("null") ? null : serverId,
+                            TransferReason.GATEWAY
+                    )
+                    .thenApply(outcome ->
+                            outcome.state().name()
+                                    + (outcome.message().isBlank()
+                                    ? ""
+                                    : ": " + outcome.message())
+                    );
         }
-        CompletableFuture<de.tasticgames.proxy.routing.TransferResult> transfer = serverId != null && !serverId.equals("null")
-                ? transferService.transferToServer(player, serverId, TransferReason.GATEWAY)
-                : transferService.transferToType(player, type, TransferReason.GATEWAY);
-        return transfer.thenApply(result -> result.status().name() + (result.message().isBlank() ? "" : ": " + result.message()));
+
+        CompletableFuture<de.tasticgames.proxy.routing.TransferResult> transfer =
+                serverId != null && !serverId.equals("null")
+                        ? transferService.transferToServer(player, serverId, TransferReason.GATEWAY)
+                        : transferService.transferToType(player, type, TransferReason.GATEWAY);
+
+        return transfer.thenApply(result ->
+                result.status().name()
+                        + (result.message().isBlank()
+                        ? ""
+                        : ": " + result.message())
+        );
     }
 
-    private de.tasticgames.proxy.chat.GlobalChatService chatService;
-    private de.tasticgames.proxy.chat.ClanTagService clanTagService;
-
     private void registerListeners() {
-        playerListener = new NetworkPlayerListener(playerManager, presenceService, routingService, configurationService, languageService,
-                fallbackService, messages, telemetryService, metrics, logger);
-        playerListener.onJoin(session -> friendService.notifyPresenceChange(session, true));
+        playerListener = new NetworkPlayerListener(
+                playerManager,
+                presenceService,
+                routingService,
+                configurationService,
+                languageService,
+                fallbackService,
+                messages,
+                telemetryService,
+                metrics,
+                logger
+        );
+
+        playerListener.onJoin(session ->
+                friendService.notifyPresenceChange(session, true)
+        );
+
         playerListener.onQuit(session -> {
             friendService.notifyPresenceChange(session, false);
             partyService.memberOffline(session);
         });
+
         register(new MaintenanceListener(maintenanceService, telemetryService));
         register(new MaintenancePingListener(maintenanceService));
         register(new AlphaAccessListener(alphaAccessService, telemetryService));
@@ -343,6 +416,7 @@ public final class ProxyBootstrap {
         register(new DrainListener(drainService));
         register(chatService);
         register(clanTagService);
+
         logger.info("Registered {} proxy listeners.", listeners.size());
     }
 
@@ -356,32 +430,65 @@ public final class ProxyBootstrap {
      * therefore forwarded to the backend while the player already is on a lobby server so
      * TasticLobby's own /lobby (spawn / leave the cookie open world) runs.
      */
-    @com.velocitypowered.api.event.Subscribe(order = com.velocitypowered.api.event.PostOrder.EARLY)
+    @com.velocitypowered.api.event.Subscribe(priority = EARLY_EVENT_PRIORITY)
     public void onCommandExecute(com.velocitypowered.api.event.command.CommandExecuteEvent event) {
         if (!(event.getCommandSource() instanceof Player player)) {
             return;
         }
+
         String raw = event.getCommand().trim();
         int space = raw.indexOf(' ');
-        String name = (space < 0 ? raw : raw.substring(0, space)).toLowerCase(java.util.Locale.ROOT);
+        String name = (space < 0 ? raw : raw.substring(0, space))
+                .toLowerCase(java.util.Locale.ROOT);
+
         if (!(name.equals("lobby") || name.equals("hub") || name.equals("l"))) {
             return;
         }
-        String current = player.getCurrentServer().map(s -> s.getServerInfo().getName()).orElse(null);
+
+        String current = player.getCurrentServer()
+                .map(s -> s.getServerInfo().getName())
+                .orElse(null);
+
         if (current == null) {
             return;
         }
-        boolean onLobby = serverRegistryService.find(current).map(s -> s.type() == de.tasticgames.proxy.server.ServerType.LOBBY).orElse(false);
+
+        boolean onLobby = serverRegistryService.find(current)
+                .map(s -> s.type() == de.tasticgames.proxy.server.ServerType.LOBBY)
+                .orElse(false);
+
         if (onLobby) {
-            event.setResult(com.velocitypowered.api.event.command.CommandExecuteEvent.CommandResult.forwardToServer());
+            event.setResult(
+                    com.velocitypowered.api.event.command.CommandExecuteEvent.CommandResult.forwardToServer()
+            );
         }
     }
 
     private void registerCommands() {
-        TasticProxyCommand.Dependencies deps = new TasticProxyCommand.Dependencies(proxyServer, identity, buildInfo, configurationService,
-                apiClient, metrics, proxyRegistryService, serverRegistryService, playerManager, presenceService, routingService, transferService,
-                reservationService, commandBus, telemetryService, maintenanceService, alphaAccessService, partyService, clanService, playerLookup,
-                this::applyReload);
+        TasticProxyCommand.Dependencies deps = new TasticProxyCommand.Dependencies(
+                proxyServer,
+                identity,
+                buildInfo,
+                configurationService,
+                apiClient,
+                metrics,
+                proxyRegistryService,
+                serverRegistryService,
+                playerManager,
+                presenceService,
+                routingService,
+                transferService,
+                reservationService,
+                commandBus,
+                telemetryService,
+                maintenanceService,
+                alphaAccessService,
+                partyService,
+                clanService,
+                playerLookup,
+                this::applyReload
+        );
+
         command(new TasticProxyCommand(deps, messages, logger), "tasticproxy", "tproxy");
         command(new ServerStatusCommand(serverRegistryService, drainService, serverHealthService, messages, telemetryService, logger), "serverstatus", "servers");
         command(new MaintenanceCommand(maintenanceService, messages, telemetryService, logger), "maintenance");
@@ -391,14 +498,20 @@ public final class ProxyBootstrap {
         command(new PartyCommand(partyService, partyTransferService, notificationService, playerLookup, proxyServer, messages, telemetryService, logger, false), "party", "p");
         command(new PartyCommand(partyService, partyTransferService, notificationService, playerLookup, proxyServer, messages, telemetryService, logger, true), "pc", "partychat");
         command(new ClanCommand(clanService, playerLookup, proxyServer, messages, telemetryService, logger), "clan", "c");
+
         // no /pass, /battlepass or /bp here: registering them would permanently shadow TasticLobby's own /pass
         command(new PassAdminCommand(passService, playerLookup, proxyServer, messages, telemetryService, logger), "passadmin");
+
         logger.info("Registered {} proxy commands.", commands.size());
     }
 
     private void command(SimpleCommand command, String name, String... aliases) {
         CommandManager manager = proxyServer.getCommandManager();
-        CommandMeta meta = manager.metaBuilder(name).aliases(aliases).plugin(plugin).build();
+        CommandMeta meta = manager.metaBuilder(name)
+                .aliases(aliases)
+                .plugin(plugin)
+                .build();
+
         manager.register(meta, command);
         commands.add(meta);
     }
@@ -419,11 +532,15 @@ public final class ProxyBootstrap {
 
     private void stopInternal() throws Exception {
         Exception failure = null;
+
         CommandManager manager = proxyServer.getCommandManager();
+
         for (CommandMeta meta : commands) {
             manager.unregister(meta);
         }
+
         commands.clear();
+
         proxyServer.getEventManager().unregisterListeners(plugin);
         listeners.clear();
 
@@ -433,15 +550,27 @@ public final class ProxyBootstrap {
                 presenceService.disconnected(session);
             }
         }
+
         if (telemetryService != null) {
-            telemetryService.publish(telemetryService.event(TelemetryTypes.PROXY_STOPPED).build());
+            telemetryService.publish(
+                    telemetryService.event(
+                            TelemetryTypes.PROXY_STOPPED
+                    ).build()
+            );
         }
+
         while (!started.isEmpty()) {
             ProxyService service = started.pop();
+
             try {
                 service.stop();
             } catch (Exception e) {
-                logger.warn("Service {} failed to stop cleanly: {}", service.id(), Throwables.rootMessage(e));
+                logger.warn(
+                        "Service {} failed to stop cleanly: {}",
+                        service.id(),
+                        Throwables.rootMessage(e)
+                );
+
                 if (failure == null) {
                     failure = e;
                 } else {
@@ -449,7 +578,9 @@ public final class ProxyBootstrap {
                 }
             }
         }
+
         serviceRegistry.clear();
+
         if (failure != null) {
             throw failure;
         }

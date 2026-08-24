@@ -9,6 +9,8 @@ plugins {
 group = "de.tasticgames"
 version = "1.0.0"
 
+val pluginVersion = version.toString()
+
 repositories {
     mavenLocal()
     mavenCentral()
@@ -74,11 +76,12 @@ val gitCommit: String = try {
 }
 
 tasks.processResources {
-    inputs.property("version", project.version)
+    inputs.property("version", pluginVersion)
     inputs.property("gitCommit", gitCommit)
+
     filesMatching("build-info.properties") {
         expand(
-            "version" to project.version,
+            "version" to pluginVersion,
             "buildTimestamp" to buildTimestamp,
             "gitCommit" to gitCommit
         )
@@ -111,6 +114,10 @@ tasks.shadowJar {
     )
 
     mergeServiceFiles()
+
+    filesMatching("META-INF/services/**") {
+        duplicatesStrategy = DuplicatesStrategy.INCLUDE
+    }
 }
 
 tasks.jar {
